@@ -305,37 +305,56 @@ def api_key_input_ui():
 
 def call_gemini(model: str, system_prompt: str, user_input: str,
                 max_tokens: int, temperature: float, api_key: str) -> str:
+    """
+    Gemini helper without explicit safety settings.
+    Also hides low-level safety/harm-category messages from the UI.
+    """
     genai.configure(api_key=api_key)
-    safety = {
-        "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-        "HARM_CATEGORY_SEXUAL_CONTENT": "BLOCK_NONE",
-        "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
-        "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-    }
-    client = genai.GenerativeModel(
+
+    # No safety_settings passed → use provider defaults, but we will
+    # sanitize any safety-related error messages before showing them.
+    model_client = genai.GenerativeModel(
         model_name=model,
-        safety_settings=[
-            {"category": k, "threshold": v} for k, v in safety.items()
-        ],
-        system_instruction=system_prompt or BASE_SYSTEM_PROMPT,
+        system_instruction=(system_prompt or BASE_SYSTEM_PROMPT or None),
     )
-    response = client.generate_content(
-        [user_input],
-        generation_config={
-            "temperature": temperature,
-            "max_output_tokens": max_tokens,
-        },
-    )
-    # Robust extraction
+
+    try:
+        response = model_client.generate_content(
+            [user_input],
+            generation_config={
+                "temperature": float(temperature),
+                "max_output_tokens": int(max_tokens),
+            },
+        )
+    except Exception as e:
+        msg = str(e)
+
+        # Hide raw safety codes like harm_category_sexual_content, etc.
+        upper_msg = msg.upper()
+        if "SAFETY" in upper_msg or "HARM_" in upper_msg or "HARM CATEGORY" in upper_msg:
+            return (
+                "⚠️ Gemini 已封鎖此輸入，原因與其內建安全機制相關。\n"
+                "建議：\n"
+                "- 嘗試稍微調整描述方式，避免過於敏感或模糊的語句；或\n"
+                "- 在此情境下可改用 OpenAI / Anthropic / Grok 等其他模型執行相同步驟。"
+            )
+
+        # Generic error fallback (non-safety)
+        return f"⚠️ Gemini 呼叫失敗：{msg}"
+
+    # Extract text from response
     try:
         return response.text
     except Exception:
         if hasattr(response, "candidates") and response.candidates:
             parts = response.candidates[0].content.parts
-            txt = "".join(p.text for p in parts if hasattr(p, "text"))
-            return txt
-        return "⚠️ Unable to extract response text from Gemini."
-
+            txt = "".join(
+                getattr(p, "text", "") for p in parts
+                if hasattr(p, "text")
+            )
+            if txt.strip():
+                return txt
+        return "⚠️ 無法從 Gemini 回應中解析文字內容。"
 
 def call_openai(model: str, system_prompt: str, user_input: str,
                 max_tokens: int, temperature: float, api_key: str) -> str:
